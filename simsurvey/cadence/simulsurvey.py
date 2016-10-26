@@ -30,7 +30,11 @@ __all__ = ["SimulSurvey", "SurveyPlan", "LightcurveCollection"] # to be changed
 class SimulSurvey( BaseObject ):
     """
     Basic survey object
-    (far from finished)
+
+    Collects transient generator, survey plan and instrument properties.
+    Generates lightcurves for the observed transients.
+
+    See the included notebooks for usage examples.
     """
     __nature__ = "SimulSurvey"
     
@@ -44,8 +48,20 @@ class SimulSurvey( BaseObject ):
         """
         Parameters:
         ----------
-        generator: [simultarget.transient_generator or derived child like sn_generator]
+        generator: [TransientGenerator or derived child like SNIaGenerator]
+            Transient generator object that collects the sncosmo.Model
+            parameters
 
+        plan: [SurveyPlan object]
+            Survey plan containing the pointings
+        
+        instprop: [dict]
+            Dictionary containing details of the instruments used in the survey;
+            see SimulSurvey.set_instruments() for details
+
+        blinded_bias: [dict]
+            Dictionary of band names and floats. A blinded offset for each band will
+            randomly be drawn from a uniform distribution limited by the floats. 
         """
         self.__build__()
         if empty:
@@ -76,7 +92,23 @@ class SimulSurvey( BaseObject ):
     # - Get Methods        - #
     # ---------------------- #
     def get_lightcurves(self, progress_bar=False, notebook=False):
-        """
+        """Simulate the lightcurves. Requires all basic components
+        (generator, plan and instruments) to be set.
+
+        Options:
+        --------
+        progress_bar: [bool]
+            Show an astropy ProgressBar during the process
+
+        notebook: [bool]
+            Value is passed the ProgressBar's option 'ipython_widget';
+            only works if progress_bar is True; use True in jupyter
+            notebooks and False in a shell. May not work properly depending
+            in package versions.
+
+        Return
+        ------
+        LightcurveCollection object
         """
         if not self.is_set():
             raise AttributeError("plan, generator or instrument not set")
@@ -164,7 +196,13 @@ class SimulSurvey( BaseObject ):
     # -------------
     # - Targets
     def set_target_generator(self, generator):
-        """
+        """Set or replace the generator for transient properties 
+
+        Parameters
+        ----------
+        generator: [TransientGenerator or derived child like SNIaGenerator]
+            Transient generator object that collects the sncosmo.Model
+            parameters
         """
         if "__nature__" not in dir(generator) or\
           generator.__nature__ != "TransientGenerator":
@@ -178,7 +216,12 @@ class SimulSurvey( BaseObject ):
     # -------------
     # - SurveyPlan
     def set_plan(self,plan):
-        """
+        """Set or replace survey plan 
+
+        Parameters
+        ----------
+        plan: [SurveyPlan object]
+            Survey plan containing the pointings
         """
         # ----------------------
         # - Load cadence here
@@ -196,11 +239,17 @@ class SimulSurvey( BaseObject ):
     # -------------
     # - Instruments
     def set_instruments(self,properties):
-        """
+        """Set or replace instrument properties
         properties must be a dictionary containing the
-        instruments' information (bandname,gain,zp,zpsys,err_calib) related
-        to each bands
-
+        
+        Parameters
+        ----------
+        properties: [dict]
+            Dictionary containing details of the instruments used in the survey;
+            instruments' information (bandname,gain,zp,zpsys,err_calib) related
+            to each band. (Note that the band names must be registered in sncosmo
+            and stand for a combination of instrument and bandpass. Therefore you
+            must register a copy of  a bandpass that you want to use twice.)
 
         example..
         ---------
@@ -221,19 +270,24 @@ class SimulSurvey( BaseObject ):
     # -----------------------
     # - Blinded bias in bands
     def set_blinded_bias(self, bias):
-        """Expect input dict of band and bounds maximum bias
-        Bias will be drawn from uniform distribution
+        """Set or reset blinded bias
+
+        Parameters
+        ----------
+        bias: [dict]
+            Dictionary of band names and floats. A blinded offset for each band will
+            randomly be drawn from a uniform distribution limited by the floats. 
         """
         self._side_properties['blinded_bias'] = {k: np.random.uniform(-v, v) 
-                                            for k, v in bias.items()}
+                                                 for k, v in bias.items()}
 
     # ---------------------- #
     # - Add Stuffs         - #
     # ---------------------- #
     def add_instrument(self,bandname,gain,zp,zpsys="ab",err_calib=None,
                        force_it=True,update=True,**kwargs):
-        """
-        kwargs could be any properties you wish to save with the instrument
+        """Add a single instrument. See SimulSurvey.add_instruments() for more
+        details.        
         """
         if self.instruments is None:
             self._properties["instruments"] = {}
@@ -426,7 +480,6 @@ class SurveyPlan( BaseObject ):
     A list of fields can be given to simplify adding observations and avoid 
     lookups whether an object is in a certain field.
     Currently assumes a single instrument, especially for FoV width and height.
-    [This may be useful for the cadence property of SimulSurvey]
     """
     __nature__ = "SurveyPlan"
 
@@ -440,8 +493,35 @@ class SurveyPlan( BaseObject ):
         """
         Parameters:
         ----------
-        TBA
+        time: [array-like object of floats]
+            Array of observation times
 
+        ra, dec: [array-like objects of floats]
+            Arrays of pointing coordinates (not required if using obs_field)
+
+        band: [list of strings]
+            Band passes used for each pointing
+        
+        skynoise: [array-like object of floats]
+            Array of skynoise values
+
+        obs_field: [array-like object of ints]
+            Array of fieldIDs (requires fields to be set as well)
+
+        width, height: [floats]
+            Dimensions of the observing fields
+
+        fields: [dict]
+            Arguments to be passed to
+            astrobject.utils.plot.skybins.SurveyFieldBins
+            (see examples)
+
+        load_opsim: [str]
+            Filename of the opsim sqlite file containing the plan
+            (if not None, everything except width, height and fields
+            will be ignored)
+
+        **kwargs are passed to SurveyPlan.load_opsim()
         """
         self.__build__()
         if empty:
@@ -522,18 +602,27 @@ class SurveyPlan( BaseObject ):
     # - Load Method        - #
     # ---------------------- #
     def load_opsim(self, filename, table_name="Summary", band_dict=None,
-                   default_depth=21, zp=30):
-        """
+                   default_depth=21., zp=30.):
+        """Load plan from opsim sqlite file;
         see https://confluence.lsstcorp.org/display/SIM/Summary+Table+Column+Descriptions
         for format description
 
         Currently only the used columns are loaded
 
-        table_name -- name of table in SQLite DB (deafult "ptf" because of 
-                      Eric's example)
-        band_dict -- dictionary for converting filter names 
-        zp -- zero point for converting sky brightness from mag to flux units
-              (should match the zp used in instprop for SimulSurvey)
+        Parameters
+        ----------
+        table_name: [str]
+            Name of table in SQLite DB 
+
+        band_dict: [dict]
+            Dictionary for converting filter names
+
+        default_depth: [float]
+            Default value for 5-sigma depth if column in file is empty 
+        
+        zp: [float]
+            Zero point for converting sky brightness from mag to flux units
+            (should match the zp used in instprop for SimulSurvey)
         """        
         import sqlite3
         connection = sqlite3.connect(filename)
